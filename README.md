@@ -24,6 +24,9 @@ private repository by the scheduled workflow.
 `NY511_USERNAME`, `NY511_PASSWORD` (511NY developer account) and `ARCHIVE_TOKEN` (fine-grained token limited to the
 data repository, Contents: read and write). Credentials go only into the HTTP Authorization header and are never
 printed; the workflow log prints counts and timings only.
+If `ARCHIVE_TOKEN` is missing, expired or invalid, the run fails with the error **"ARCHIVE_TOKEN expired/invalid"**;
+the failed run is kept in the Actions cache and written to `runs` (plus a `gaps` row) by the next good run. A warning
+appears 7 days before the token expires.
 
 ## Run locally
 `NY511_USERNAME=… NY511_PASSWORD=… ARCHIVE_ROOT=/path/to/data-repo python3 archive.py`
