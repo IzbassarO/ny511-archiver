@@ -36,7 +36,7 @@ class ArchiveTest(unittest.TestCase):
     def test_tables(self):
         s = go(T0, [ev("A"), ev("B", county="Erie")])
         self.assertEqual((s["onondaga"], s["new"], s["data_changed"]), (1, 1, True))
-        self.assertFalse(go(T0 + 1800, [ev("A")])["data_changed"])          # nothing changed: no write
+        self.assertFalse(go(T0 + 900, [ev("A")])["data_changed"])           # nothing changed: no write
         s = go(T0 + 3600, [ev("A", desc="Two lanes closed")])
         self.assertEqual(s["changed_fields"], 1)
         runs = archive.read_all("runs")
@@ -96,12 +96,29 @@ class ArchiveTest(unittest.TestCase):
     def test_cache_lost_falls_back_to_committed_state(self):
         go(T0, [ev("A")])
         shutil.rmtree(archive.ROOT / ".state-cache")
-        s = go(T0 + 1800, [ev("A")])
+        s = go(T0 + 900, [ev("A")])
         self.assertEqual((s["new"], s["data_changed"]), (0, False))
+
+    def test_token_failure_logged_on_next_good_run(self):
+        go(T0, [ev("A")])
+        archive.record_failure({"run_id": "x", "scheduled_at": "", "started_at": archive.iso(T0 + 900)},
+                               "ARCHIVE_TOKEN expired/invalid")
+        s = go(T0 + 3600, [ev("A")])
+        self.assertTrue(s["gap"] and s["data_changed"])
+        runs = archive.read_all("runs")
+        self.assertEqual([r["status"] for r in runs], ["ok", "failed", "ok"])
+        self.assertEqual(runs[1]["error"], "ARCHIVE_TOKEN expired/invalid")
+        self.assertFalse((archive.ROOT / archive.FAILED_RUNS).exists())
+
+    def test_gap_threshold_25_min(self):
+        go(T0, [ev("A")])
+        self.assertFalse(go(T0 + 20 * 60, [ev("A")])["gap"])
+        self.assertTrue(go(T0 + 50 * 60, [ev("A")])["gap"])
 
     def test_scheduled_slot(self):
         self.assertEqual(archive.scheduled_slot(archive.parse_iso("2026-11-23T10:15:30Z")), "2026-11-23T10:07:00Z")
-        self.assertEqual(archive.scheduled_slot(archive.parse_iso("2026-11-23T10:05:00Z")), "2026-11-23T09:37:00Z")
+        self.assertEqual(archive.scheduled_slot(archive.parse_iso("2026-11-23T10:30:00Z")), "2026-11-23T10:22:00Z")
+        self.assertEqual(archive.scheduled_slot(archive.parse_iso("2026-11-23T10:05:00Z")), "2026-11-23T09:52:00Z")
 
     def test_no_credentials_never_fetches(self):
         env = {k: os.environ.pop(k, None) for k in ("NY511_USERNAME", "NY511_PASSWORD")}

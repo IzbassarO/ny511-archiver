@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Archive 511NY (NYSDOT CARS) traffic events for Onondaga County. Standard library only.
 
-One run = one fetch of the statewide /events feed (scheduled at :07 and :37 by GitHub Actions).
+One run = one fetch of the statewide /events feed (scheduled every 15 min, at :07 :22 :37 :52, by GitHub Actions).
 
 Tables (CSV, one file per month, under data/):
   runs/YYYY-MM.csv     run_id, scheduled_at, started_at, status (ok | failed), n_events, error
   events/YYYY-MM.csv   one row per event_id (month of first_seen): the latest 511NY fields + first_seen, last_seen
   changes/YYYY-MM.csv  event_id, seen_at, field, old, new — every change of a tracked field, plus the pseudo-field
                        `_present` ("" -> "1" first appearance, "1" -> "0" gone from the feed, "0" -> "1" back again)
-  gaps.csv             no_data_from, no_data_to, minutes — successful runs more than GAP_SECONDS apart
+  gaps.csv             no_data_from, no_data_to, minutes — successful runs more than GAP_SECONDS (25 min) apart
   raw/YYYY-MM/YYYY-MM-DD.json.gz        the day's first full Onondaga snapshot (written once)
   raw/YYYY-MM/YYYY-MM-DD/HHMMSS.json.gz the raw record of every event that appeared or changed in that run
 Winter road-condition segments with "no active reporting" are not events and are skipped.
@@ -38,8 +38,8 @@ csv.field_size_limit(sys.maxsize)  # some 511NY geometries exceed the 128 KB def
 FEED = os.environ.get("NY511_EVENTS_URL", "https://nysdot.carsprogram.org/carsapi_v1/api/events")
 COUNTY = "Onondaga"
 ROOT = Path(os.environ.get("ARCHIVE_ROOT") or Path(__file__).resolve().parent)
-GAP_S = int(os.environ.get("GAP_SECONDS", str(45 * 60)))
-CRON_MINUTES = (7, 37)
+GAP_S = int(os.environ.get("GAP_SECONDS", str(25 * 60)))
+CRON_MINUTES = (7, 22, 37, 52)
 TIMEOUT_S = 40
 TRACKED = ["category", "type", "road", "direction", "description", "lanes", "start", "end", "geometry"]
 EVENT_FIELDS = ["event_id", *TRACKED, "updated", "first_seen", "last_seen"]
@@ -183,6 +183,20 @@ def write_gz_json(p: Path, obj) -> None:
 # ------------------------------------------------------------------ state
 # committed copy: state/state.json (written with every commit); cached copy: .state-cache/state.json (every run).
 STATE_FILES = ("state/state.json", ".state-cache/state.json")
+FAILED_RUNS = ".state-cache/failed_runs.json"   # runs that could not reach the data repo (e.g. token expired)
+
+
+def record_failure(info: dict, error: str) -> None:
+    """The data repo is unreachable: keep the failed run in the cache only; the next good run writes it to the runs
+    table, and the gap check then logs the missing period."""
+    p = ROOT / FAILED_RUNS
+    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        rows = json.loads(p.read_text())
+    except (OSError, ValueError):
+        rows = []
+    rows.append({**info, "status": "failed", "n_events": "", "error": error})
+    p.write_text(json.dumps(rows))
 
 
 def load_state() -> dict:
@@ -209,6 +223,12 @@ def save_state(st: dict, rel: str) -> None:
 def run(run_info: dict, events: list | None, error: str = "") -> dict:
     """Record one run (events=None means the fetch failed). Writes data/ only when something changed."""
     st = load_state()
+    fp = ROOT / FAILED_RUNS
+    try:
+        earlier_failures = json.loads(fp.read_text())
+    except (OSError, ValueError):
+        earlier_failures = []
+    st["pending_runs"] = earlier_failures + st["pending_runs"]
     now_s = run_info["started_at"]
     now = parse_iso(now_s)
     ok = events is not None
@@ -260,7 +280,7 @@ def run(run_info: dict, events: list | None, error: str = "") -> dict:
     raw_dir = data() / "raw" / now_s[:7]
     raw_path = raw_dir / f"{now_s[:10]}.json.gz"
     first_of_day = ok and not raw_path.exists()
-    changed = bool(changes or gaps or not ok or first_of_day)
+    changed = bool(changes or gaps or not ok or first_of_day or earlier_failures or os.environ.get("FLUSH") == "1")
     if changed:
         append_rows("runs", st["pending_runs"], RUN_FIELDS, "started_at")
         st["pending_runs"] = []
@@ -283,6 +303,7 @@ def run(run_info: dict, events: list | None, error: str = "") -> dict:
                           {"seen": now_s, "events": [c["event"] for c in raw_changes]})
     st["saved"] = now_s
     save_state(st, STATE_FILES[1])
+    fp.unlink(missing_ok=True)
     if changed:
         save_state(st, STATE_FILES[0])
     summary["data_changed"] = changed
@@ -331,6 +352,10 @@ def main() -> int:
     sched = scheduled_slot(t0) if os.environ.get("GITHUB_EVENT_NAME", "") == "schedule" else ""
     info = {"run_id": os.environ.get("GITHUB_RUN_ID") or f"local-{int(t0)}", "scheduled_at": sched,
             "started_at": started}
+    if len(sys.argv) == 3 and sys.argv[1] == "--record-failure":
+        record_failure(info, sys.argv[2])
+        print(f"recorded failed run: {sys.argv[2]}")
+        return 1
     try:
         events, err = fetch(), ""
     except Exception as ex:  # record the class only: messages can echo URLs or headers

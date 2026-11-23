@@ -3,8 +3,13 @@ name: archive-511ny
 # so forks can never run this workflow or see its secrets.
 on:
   schedule:
-    - cron: "7,37 * * * *"   # odd minutes: GitHub delays/drops runs at :00 and :30
-  workflow_dispatch: {}
+    - cron: "7,22,37,52 * * * *"   # every 15 min at odd minutes (GitHub delays/drops runs at :00 and :30)
+  workflow_dispatch:
+    inputs:
+      flush:
+        description: "Commit pending run rows even if no event changed"
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -17,6 +22,30 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      - name: Check ARCHIVE_TOKEN
+        id: token
+        env:
+          TOKEN: ${{ secrets.ARCHIVE_TOKEN }}
+        run: |
+          code=000
+          if [ -n "$TOKEN" ]; then
+            code=$(curl -s -o /dev/null -D headers.txt -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+              https://api.github.com/repos/IzbassarO/ny511-archive) || code=000
+          fi
+          if [ "$code" != 200 ]; then
+            echo "::error title=ARCHIVE_TOKEN expired/invalid::ARCHIVE_TOKEN expired/invalid (HTTP $code). Create a new fine-grained token for IzbassarO/ny511-archive (Contents: read and write) and update the ARCHIVE_TOKEN secret. This run is logged as failed and the missing period as a gap."
+            rm -f headers.txt
+            exit 1
+          fi
+          exp=$(grep -i '^github-authentication-token-expiration:' headers.txt | cut -d' ' -f2- | tr -d '\r' || true)
+          rm -f headers.txt
+          echo "ARCHIVE_TOKEN ok; expires: ${exp:-never}"
+          if [ -n "$exp" ]; then
+            left=$(( ( $(date -d "$exp" +%s) - $(date +%s) ) / 86400 ))
+            if [ "$left" -lt 7 ]; then
+              echo "::warning title=ARCHIVE_TOKEN expires soon::ARCHIVE_TOKEN expires in $left days ($exp). Replace it before then."
+            fi
+          fi
       - name: Check out the private data repo
         uses: actions/checkout@v4
         with:
@@ -24,6 +53,7 @@ jobs:
           token: ${{ secrets.ARCHIVE_TOKEN }}   # fine-grained, only ny511-archive, contents: write
           path: archive
       - name: Restore state
+        if: always()
         uses: actions/cache/restore@v4
         with:
           path: archive/.state-cache
@@ -32,9 +62,15 @@ jobs:
       - name: Fetch and archive
         env:
           ARCHIVE_ROOT: archive
+          FLUSH: ${{ inputs.flush && '1' || '0' }}
           NY511_USERNAME: ${{ secrets.NY511_USERNAME }}
           NY511_PASSWORD: ${{ secrets.NY511_PASSWORD }}
         run: python3 archive.py   # prints counts and timings only (this repo's logs are public)
+      - name: Record failed run (data repo unreachable)
+        if: failure() && steps.token.outcome == 'failure'
+        env:
+          ARCHIVE_ROOT: archive
+        run: python3 archive.py --record-failure "ARCHIVE_TOKEN expired/invalid" || true
       - name: Save state
         if: always()
         uses: actions/cache/save@v4
@@ -42,7 +78,7 @@ jobs:
           path: archive/.state-cache
           key: state-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Commit to the data repo if data changed
-        if: always()
+        if: always() && steps.token.outcome == 'success'
         working-directory: archive
         run: |
           if [ -n "$(git status --porcelain data state)" ]; then
