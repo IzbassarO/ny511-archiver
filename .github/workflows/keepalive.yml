@@ -1,0 +1,23 @@
+name: keepalive
+# GitHub disables scheduled workflows in public repos after 60 days without repository activity. The archive commits
+# go to the private data repo, so this repo stays quiet: once a month, re-enable both scheduled workflows via the API
+# (no commits needed).
+on:
+  schedule:
+    - cron: "23 5 1 * *"
+  workflow_dispatch: {}
+permissions:
+  actions: write
+jobs:
+  keepalive:
+    if: github.repository == 'IzbassarO/ny511-archiver'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for wf in archive.yml keepalive.yml; do
+            gh api -X PUT "repos/${{ github.repository }}/actions/workflows/$wf/enable"
+            echo "enabled $wf"
+          done

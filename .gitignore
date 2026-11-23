@@ -1,0 +1,7 @@
+archive/
+.state-cache/
+data/
+state/
+__pycache__/
+*.tmp
+.env
