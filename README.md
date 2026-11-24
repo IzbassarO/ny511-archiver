@@ -6,8 +6,11 @@ private repository by the scheduled workflow.
 
 - `archive.py` — one run: fetch the statewide 511NY `/events` feed, keep Onondaga County, update the tables.
   Standard library only. `active_at(timestamp)` reconstructs which events were present at any time.
-- `.github/workflows/archive.yml` — cron `7,22,37,52 * * * *` + manual button (option `flush` commits waiting run rows). Triggers are `schedule` and
-  `workflow_dispatch` only (never `pull_request`), so forks cannot run it or read its secrets.
+- `.github/workflows/archive.yml` — main trigger: an external cron (cron-job.org) calls the `workflow_dispatch` API at
+  minutes 7, 22, 37, 52 UTC. GitHub's own cron at the same minutes is a backup (GitHub often delays or skips scheduled
+  runs). Runs never overlap (concurrency group), and a trigger less than 10 min after the last successful run is
+  skipped, so duplicates are harmless. Manual button option `flush` commits waiting run rows. Triggers are
+  `schedule` and `workflow_dispatch` only (never `pull_request`), so forks cannot run it or read its secrets.
 - `.github/workflows/keepalive.yml` — monthly; re-enables the scheduled workflows so GitHub does not disable them
   after 60 days without activity in this repo.
 
@@ -27,6 +30,10 @@ printed; the workflow log prints counts and timings only.
 If `ARCHIVE_TOKEN` is missing, expired or invalid, the run fails with the error **"ARCHIVE_TOKEN expired/invalid"**;
 the failed run is kept in the Actions cache and written to `runs` (plus a `gaps` row) by the next good run. A warning
 appears 7 days before the token expires.
+
+The external cron uses its own fine-grained token (only this repository, Actions: read and write), stored only in the
+cron service. If it expires, dispatches fail (the cron service emails the owner) and the GitHub backup schedule keeps
+running.
 
 ## Run locally
 `NY511_USERNAME=… NY511_PASSWORD=… ARCHIVE_ROOT=/path/to/data-repo python3 archive.py`

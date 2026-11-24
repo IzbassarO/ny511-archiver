@@ -1,9 +1,11 @@
 name: archive-511ny
-# Runs only on schedule or by the owner's manual button: no pull_request / pull_request_target triggers,
-# so forks can never run this workflow or see its secrets.
+# Main trigger: cron-job.org calls the workflow_dispatch API every 15 min (GitHub's own schedule is best-effort and
+# often skips hours). The schedule below stays as a backup. A run within 10 min of the last successful one is skipped,
+# so duplicate triggers are harmless. No pull_request / pull_request_target triggers: forks can never run this
+# workflow or see its secrets.
 on:
   schedule:
-    - cron: "7,22,37,52 * * * *"   # every 15 min at odd minutes (GitHub delays/drops runs at :00 and :30)
+    - cron: "7,22,37,52 * * * *"   # backup; same minutes as cron-job.org
   workflow_dispatch:
     inputs:
       flush:
@@ -12,7 +14,7 @@ on:
         default: false
 permissions:
   contents: read
-concurrency:
+concurrency:                       # one run at a time; GitHub keeps at most one waiting run and drops older waiting ones
   group: archive
   cancel-in-progress: false
 jobs:

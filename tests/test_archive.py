@@ -115,6 +115,16 @@ class ArchiveTest(unittest.TestCase):
         self.assertFalse(go(T0 + 20 * 60, [ev("A")])["gap"])
         self.assertTrue(go(T0 + 50 * 60, [ev("A")])["gap"])
 
+    def test_duplicate_trigger_skipped(self):
+        go(T0, [ev("A")])
+        self.assertTrue(archive.duplicate_trigger(T0 + 5 * 60))      # second trigger in the same slot
+        self.assertFalse(archive.duplicate_trigger(T0 + 15 * 60))    # next slot runs
+        os.environ["FLUSH"] = "1"
+        try:
+            self.assertFalse(archive.duplicate_trigger(T0 + 60))
+        finally:
+            del os.environ["FLUSH"]
+
     def test_scheduled_slot(self):
         self.assertEqual(archive.scheduled_slot(archive.parse_iso("2026-11-23T10:15:30Z")), "2026-11-23T10:07:00Z")
         self.assertEqual(archive.scheduled_slot(archive.parse_iso("2026-11-23T10:30:00Z")), "2026-11-23T10:22:00Z")

@@ -40,6 +40,8 @@ COUNTY = "Onondaga"
 ROOT = Path(os.environ.get("ARCHIVE_ROOT") or Path(__file__).resolve().parent)
 GAP_S = int(os.environ.get("GAP_SECONDS", str(25 * 60)))
 CRON_MINUTES = (7, 22, 37, 52)
+# A trigger within this long after the last successful run is a duplicate (cron-job.org + GitHub schedule) and is skipped.
+MIN_INTERVAL_S = int(os.environ.get("MIN_INTERVAL_SECONDS", str(10 * 60)))
 TIMEOUT_S = 40
 TRACKED = ["category", "type", "road", "direction", "description", "lanes", "start", "end", "geometry"]
 EVENT_FIELDS = ["event_id", *TRACKED, "updated", "first_seen", "last_seen"]
@@ -61,7 +63,7 @@ def data() -> Path:
 
 
 def scheduled_slot(t: float) -> str:
-    """Latest cron slot (minute 7 or 37) at or before t."""
+    """Latest cron slot (minute 7, 22, 37 or 52) at or before t."""
     d = dt.datetime.fromtimestamp(t, dt.timezone.utc).replace(second=0, microsecond=0)
     for back in range(0, 61):
         c = d - dt.timedelta(minutes=back)
@@ -346,16 +348,28 @@ def active_at(ts: str | float) -> dict:
 
 
 # ------------------------------------------------------------------ main
+def duplicate_trigger(t0: float) -> bool:
+    """True (and nothing is written) if the last successful run started less than MIN_INTERVAL_S ago, unless FLUSH=1."""
+    last = load_state().get("last_ok")
+    if os.environ.get("FLUSH") == "1" or not last or t0 - parse_iso(last) >= MIN_INTERVAL_S:
+        return False
+    print(f"skipped: duplicate trigger, last successful run {round((t0 - parse_iso(last)) / 60)} min ago")
+    return True
+
+
 def main() -> int:
     t0 = time.time()
     started = iso(t0)
-    sched = scheduled_slot(t0) if os.environ.get("GITHUB_EVENT_NAME", "") == "schedule" else ""
+    # schedule = GitHub's backup cron; workflow_dispatch = cron-job.org (main trigger) or the manual button.
+    sched = scheduled_slot(t0) if os.environ.get("GITHUB_EVENT_NAME", "") in ("schedule", "workflow_dispatch") else ""
     info = {"run_id": os.environ.get("GITHUB_RUN_ID") or f"local-{int(t0)}", "scheduled_at": sched,
             "started_at": started}
     if len(sys.argv) == 3 and sys.argv[1] == "--record-failure":
         record_failure(info, sys.argv[2])
         print(f"recorded failed run: {sys.argv[2]}")
         return 1
+    if duplicate_trigger(t0):
+        return 0
     try:
         events, err = fetch(), ""
     except Exception as ex:  # record the class only: messages can echo URLs or headers
